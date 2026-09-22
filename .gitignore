@@ -1,0 +1,7 @@
+/target
+/data/*
+!/data/.gitkeep
+/artifacts/*
+!/artifacts/.gitkeep
+__pycache__/
+.venv/

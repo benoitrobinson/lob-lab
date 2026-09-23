@@ -5,3 +5,6 @@
 !/artifacts/.gitkeep
 __pycache__/
 .venv/
+
+# recorder logs
+*.log

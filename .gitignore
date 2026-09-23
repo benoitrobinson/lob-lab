@@ -8,3 +8,6 @@ __pycache__/
 
 # recorder logs
 *.log
+
+# Figures are generated from artifacts/, and artifacts/ is not committed.
+figures/*.png

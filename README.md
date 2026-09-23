@@ -27,6 +27,8 @@ different**, and 21 straddling two aggregated updates.
 
     make record     # writes data/, with a REST snapshot every 30s
     make verify     # reports drift, then the decisive comparison
+    make study      # writes artifacts/runs.csv and artifacts/headline.json
+    make figures    # draws them; no figure is committed until there is a result
 
 ## Limitations, stated up front
 

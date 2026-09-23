@@ -1,5 +1,7 @@
 # lob-lab
 
+[![ci](https://github.com/benoitrobinson/lob-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/benoitrobinson/lob-lab/actions/workflows/ci.yml)
+
 How much of a market maker's backtested P&L is an artefact of assuming fill-at-touch,
 measured on real Deribit BTC-PERPETUAL data, and how much of the inventory-skew
 advantage measured on synthetic paths in `vol-lab` survives a queue-aware fill model.

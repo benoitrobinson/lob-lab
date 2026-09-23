@@ -21,6 +21,30 @@ impl Quoter for Symmetric {
     }
 }
 
+/// Joins the best bid and the best ask, which is where queue position decides
+/// everything. A quoter that rests behind the touch is filled almost entirely
+/// by trades sweeping through it, and a sweep fills you whatever your queue
+/// position was, so the fill model stops mattering. That is measurable: with
+/// `Symmetric { half_spread_ticks: 2 }` all three fill models produce byte
+/// identical P&L.
+pub struct JoinTouch {
+    /// 0 joins the touch. 1 rests one tick behind it.
+    pub offset_ticks: i64,
+    pub size: Qty,
+}
+
+impl Quoter for JoinTouch {
+    fn quote(&mut self, ctx: &Ctx) -> Option<Quotes> {
+        let (bid, _) = ctx.book.best_bid()?;
+        let (ask, _) = ctx.book.best_ask()?;
+        Some(Quotes {
+            bid: Some(bid - self.offset_ticks),
+            ask: Some(ask + self.offset_ticks),
+            size: self.size,
+        })
+    }
+}
+
 /// Gueant, Lehalle and Fernandez-Tapia (2013) steady-state quotes, ported from
 /// `vol-lab`'s `glft_half_spreads` without changing the formula, so the two
 /// experiments differ only in how fills happen.
@@ -129,6 +153,35 @@ mod tests {
         let q = s.quote(&ctx).unwrap();
         assert_eq!(q.bid, Some(203));
         assert_eq!(q.ask, Some(207));
+    }
+
+    #[test]
+    fn joining_the_touch_quotes_at_the_best_prices() {
+        let mut book = lob::Book::new();
+        book.set(lob::Side::Bid, 200, 100);
+        book.set(lob::Side::Ask, 210, 100);
+        let ctx = Ctx {
+            ts: 0,
+            book: &book,
+            position_usd: 0,
+        };
+        let q = JoinTouch {
+            offset_ticks: 0,
+            size: 10,
+        }
+        .quote(&ctx)
+        .unwrap();
+        assert_eq!(q.bid, Some(200));
+        assert_eq!(q.ask, Some(210));
+
+        let behind = JoinTouch {
+            offset_ticks: 1,
+            size: 10,
+        }
+        .quote(&ctx)
+        .unwrap();
+        assert_eq!(behind.bid, Some(199));
+        assert_eq!(behind.ask, Some(211));
     }
 
     #[test]

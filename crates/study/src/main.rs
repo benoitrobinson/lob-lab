@@ -10,7 +10,7 @@ use sim::engine::{Config, Engine, Quoter};
 use sim::markout::markouts_bps;
 use sim::queue::QueueModel;
 use strategy::intensity;
-use strategy::quoters::{Glft, GlftQuoter, Symmetric};
+use strategy::quoters::{Glft, GlftQuoter, JoinTouch, Symmetric};
 
 #[derive(Parser)]
 struct Args {
@@ -113,6 +113,10 @@ fn main() -> anyhow::Result<()> {
                 requote_ms: 100,
                 max_position: args.max_position,
             };
+            let mut touch = JoinTouch {
+                offset_ticks: 0,
+                size: args.quote_size,
+            };
             let mut symmetric = Symmetric {
                 half_spread_ticks: 2,
                 size: args.quote_size,
@@ -128,6 +132,7 @@ fn main() -> anyhow::Result<()> {
                 size: args.quote_size,
             };
             for (quoter_name, quoter) in [
+                ("touch", &mut touch as &mut dyn Quoter),
                 ("symmetric", &mut symmetric as &mut dyn Quoter),
                 ("glft", &mut glft as &mut dyn Quoter),
             ] {
@@ -166,6 +171,12 @@ fn main() -> anyhow::Result<()> {
     // Primary statistic, fixed in docs/preregistration.md: the relative
     // overstatement of the naive fill model, one number per day.
     let mut overstatement = Vec::new();
+    // Fills are the direction-independent measure. The P&L difference changes
+    // sign with the strategy: on a losing quoter the naive model exaggerates
+    // the loss rather than flattering the edge, because it hands out fills
+    // that were never there. The ratio of fill counts says how many of them.
+    let mut fill_inflation = Vec::new();
+    let mut naive_pnl = Vec::new();
     for day in rows
         .iter()
         .map(|r| r.day.clone())
@@ -176,23 +187,43 @@ fn main() -> anyhow::Result<()> {
                 .find(|r| r.day == day && r.quoter == quoter && r.model == model)
                 .map(|r| r.pnl_btc)
         };
-        if let (Some(naive), Some(queue)) = (pick("glft", "naive"), pick("glft", "pessimistic"))
+        let fills = |quoter: &str, model: &str| {
+            rows.iter()
+                .find(|r| r.day == day && r.quoter == quoter && r.model == model)
+                .map(|r| r.fills)
+        };
+        if let (Some(naive), Some(queue)) = (pick("touch", "naive"), pick("touch", "pessimistic"))
             && naive.abs() > 0.0
         {
             overstatement.push((naive - queue) / naive.abs());
+            naive_pnl.push(naive);
+        }
+        if let (Some(n), Some(q)) = (fills("touch", "naive"), fills("touch", "pessimistic"))
+            && q > 0
+        {
+            fill_inflation.push(n as f64 / q as f64);
         }
     }
     let (lo, hi) = bootstrap::paired_bootstrap(&overstatement, args.resamples, args.seed);
-    let mean = if overstatement.is_empty() {
-        f64::NAN
-    } else {
-        overstatement.iter().sum::<f64>() / overstatement.len() as f64
+    let (flo, fhi) = bootstrap::paired_bootstrap(&fill_inflation, args.resamples, args.seed);
+    let mean_of = |v: &[f64]| {
+        if v.is_empty() {
+            f64::NAN
+        } else {
+            v.iter().sum::<f64>() / v.len() as f64
+        }
     };
     let headline = serde_json::json!({
         "days": overstatement.len(),
-        "overstatement_mean": mean,
+        "overstatement_mean": mean_of(&overstatement),
         "overstatement_ci95": [lo, hi],
         "excludes_zero": lo > 0.0 || hi < 0.0,
+        "fill_inflation_mean": mean_of(&fill_inflation),
+        "fill_inflation_ci95": [flo, fhi],
+        // The sign of the P&L difference only means "the naive model flatters
+        // the strategy" when the strategy makes money in the first place.
+        "naive_pnl_btc_mean": mean_of(&naive_pnl),
+        "naive_pnl_positive": mean_of(&naive_pnl) > 0.0,
         "latency_ms": args.latency_ms,
         "seed": args.seed,
     });

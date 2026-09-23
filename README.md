@@ -9,8 +9,10 @@ advantage measured on synthetic paths in `vol-lab` survives a queue-aware fill m
 
 ## Status
 
-Work in progress. Results are not in yet, so this README carries no numbers. When it
-does, every number carries an uncertainty and the command that regenerates it.
+Work in progress. The pipeline runs end to end, but the preregistered study needs at
+least seven recorded days, so there is no headline result yet. The numbers below come
+from four minutes of live data and show the pipeline working, not an answer. When the
+result lands, it carries an uncertainty and the command that regenerates it.
 
 ## The question this inherits
 

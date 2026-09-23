@@ -49,6 +49,14 @@ fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&args.out)?;
     let inst = Instrument::btc_perpetual();
 
+    if !args.data.is_dir() {
+        eprintln!(
+            "{} does not exist. Record data first: see the README, then organise the \
+             recorded hours into data/days/<YYYY-MM-DD>/.",
+            args.data.display()
+        );
+        return Ok(());
+    }
     let mut days: Vec<PathBuf> = std::fs::read_dir(&args.data)?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.is_dir())

@@ -35,7 +35,7 @@ positive one.
    matching `change_id`. Comparing it against the `quote` channel instead compares two
    feeds on different clocks, which disagrees about 45% of the time while the book is
    exactly right; that comparison is reported as drift, never as a gate.
-3. An event-driven simulator with configurable order latency, three fill models, Deribit's
+3. An event-driven simulator with configurable order latency, fill models spanning the whole range of the unobservable cancel-position assumption, Deribit's
    real fee schedule, and inverse-contract P&L in BTC.
 4. Four quoters: one that joins the touch, one that stands aside on the side order flow
    imbalance points at, a symmetric control, and the GLFT inventory-skew form ported from

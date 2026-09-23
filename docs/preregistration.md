@@ -79,3 +79,14 @@ day's threshold depends on another day's scale.
 The primary statistic is unchanged and still concerns the fill models. What this quoter
 reports is a trade: markout saved against fills given up, with the number of times each
 side was pulled recorded next to it.
+
+## Robustness, 2026-09-23
+
+Where a cancellation happened in the queue cannot be read from level-2 data, so every
+queue-aware fill model assumes it. The primary statistic is unchanged and still uses the
+pessimistic model, which assumes no cancel came from ahead. Alongside it the study now
+reports the same statistic for assumptions of 0, 25, 50, 75 and 100 percent, so a reader
+can see the whole range the answer lives in rather than one point inside it.
+
+This is a report, not a choice: no assumption is selected on the strength of what it
+produces.

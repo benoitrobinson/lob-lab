@@ -32,6 +32,10 @@ struct Args {
     /// Window over which order flow imbalance is accumulated.
     #[arg(long, default_value_t = 1_000)]
     ofi_window_ms: i64,
+    /// Fractions of cancels assumed to come from ahead of us, in percent.
+    /// Level-2 data cannot say, so the study reports the whole curve.
+    #[arg(long, value_delimiter = ',', default_value = "0,25,50,75,100")]
+    cancel_sweep: Vec<u8>,
     /// How many standard deviations of the day's own imbalance the signal
     /// quoter waits for before standing aside. Setting the threshold from the
     /// day rather than from a number chosen in advance keeps it comparable
@@ -114,11 +118,16 @@ fn main() -> anyhow::Result<()> {
         let threshold = args.ofi_sigmas * ofi_sd;
         eprintln!("{name}: imbalance sd {ofi_sd:.1}, threshold {threshold:.1}");
 
-        for (model_name, model) in [
-            ("naive", QueueModel::Naive),
-            ("pessimistic", QueueModel::Pessimistic),
-            ("proportional", QueueModel::Proportional),
-        ] {
+        let mut models: Vec<(String, QueueModel)> = vec![
+            ("naive".to_string(), QueueModel::Naive),
+            ("pessimistic".to_string(), QueueModel::Pessimistic),
+            ("proportional".to_string(), QueueModel::Proportional),
+        ];
+        for pct in &args.cancel_sweep {
+            models.push((format!("ahead{pct}"), QueueModel::FromAhead(*pct)));
+        }
+        for (model_name, model) in models {
+            let model_name: &'static str = Box::leak(model_name.into_boxed_str());
             let cfg = Config {
                 latency_ms: args.latency_ms,
                 model,
@@ -251,6 +260,49 @@ fn main() -> anyhow::Result<()> {
             fill_inflation.push(n as f64 / q as f64);
         }
     }
+    // The same statistic across the sweep, so the reader sees what the answer
+    // depends on instead of one number resting on an assumption nobody can
+    // check.
+    let mut sensitivity = serde_json::Map::new();
+    for pct in &args.cancel_sweep {
+        let model = format!("ahead{pct}");
+        let mut ratios = Vec::new();
+        let mut pnl_gap = Vec::new();
+        for day in rows
+            .iter()
+            .map(|r| r.day.clone())
+            .collect::<BTreeSet<String>>()
+        {
+            let at = |m: &str| {
+                rows.iter()
+                    .find(|r| r.day == day && r.quoter == "touch" && r.model == m)
+            };
+            if let (Some(naive), Some(queue)) = (at("naive"), at(model.as_str())) {
+                if queue.fills > 0 {
+                    ratios.push(naive.fills as f64 / queue.fills as f64);
+                }
+                if naive.pnl_btc.abs() > 0.0 {
+                    pnl_gap.push((naive.pnl_btc - queue.pnl_btc) / naive.pnl_btc.abs());
+                }
+            }
+        }
+        let mean = |v: &[f64]| {
+            if v.is_empty() {
+                f64::NAN
+            } else {
+                v.iter().sum::<f64>() / v.len() as f64
+            }
+        };
+        sensitivity.insert(
+            model,
+            serde_json::json!({
+                "cancels_from_ahead_pct": pct,
+                "fill_inflation": mean(&ratios),
+                "pnl_gap": mean(&pnl_gap),
+            }),
+        );
+    }
+
     let (lo, hi) = bootstrap::paired_bootstrap(&overstatement, args.resamples, args.seed);
     let (flo, fhi) = bootstrap::paired_bootstrap(&fill_inflation, args.resamples, args.seed);
     let mean_of = |v: &[f64]| {
@@ -273,6 +325,7 @@ fn main() -> anyhow::Result<()> {
         "naive_pnl_positive": mean_of(&naive_pnl) > 0.0,
         "latency_ms": args.latency_ms,
         "seed": args.seed,
+        "cancel_position_sensitivity": sensitivity,
     });
     std::fs::write(
         args.out.join("headline.json"),

@@ -30,6 +30,29 @@ Four minutes is not a result, it is a working pipeline; the same command on reco
 is. The quoter that acts on it joins the touch and stands aside on the threatened side,
 and the study reports what that costs in fills next to what it saves in markout.
 
+## The assumption nobody can check, reported as a range
+
+Every queue-aware fill model has to assume where in the queue a cancellation happened,
+because level-2 data does not say. That assumption is not falsifiable without the
+exchange's own fills, and quoting one number that rests on it would be the kind of claim
+this repository exists to avoid.
+
+So the study sweeps it. `FromAhead(p)` assumes `p` percent of cancels came from ahead of
+us; zero is the pessimistic model, one hundred the optimistic one, and the truth is
+somewhere between. On four minutes of live data:
+
+| cancels assumed from ahead | fills handed out by fill-at-touch |
+|---|---|
+| 0% | 2.07x |
+| 25% | 1.92x |
+| 50% | 1.86x |
+| 75% | 1.77x |
+| 100% | 1.72x |
+
+The conclusion does not depend on the assumption: across the whole range, assuming you are
+filled whenever a trade prints at your price gives you between 1.7 and 2.1 times the fills
+a queue gives you. What the assumption changes is the second decimal.
+
 ## How the book is checked
 
 The obvious check is the exchange's own `quote` channel, and it is the wrong one. That

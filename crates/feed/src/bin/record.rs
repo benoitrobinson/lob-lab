@@ -20,6 +20,12 @@ struct Args {
     /// The public interval. `raw` needs an authenticated connection.
     #[arg(long, default_value = "100ms")]
     interval: String,
+    /// How often to record a REST snapshot of the book. Each one carries the
+    /// change_id it was taken at, which is what makes the rebuilt book
+    /// checkable against the exchange at the same point in the sequence
+    /// rather than at the same wall clock.
+    #[arg(long, default_value_t = 30)]
+    rest_check_secs: u64,
 }
 
 fn now_ms() -> i64 {
@@ -37,7 +43,11 @@ async fn main() -> anyhow::Result<()> {
     loop {
         let started = SystemTime::now();
         match session(&args).await {
-            Ok(()) => eprintln!("session ended cleanly"),
+            Ok(Outcome::Interrupted) => {
+                eprintln!("stopped by the operator");
+                return Ok(());
+            }
+            Ok(Outcome::Closed) => eprintln!("session ended cleanly"),
             Err(e) => eprintln!("session error: {e}"),
         }
         if started.elapsed().unwrap_or_default() > Duration::from_secs(60) {
@@ -49,7 +59,13 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn session(args: &Args) -> anyhow::Result<()> {
+/// Why a session ended: a closed socket is reconnected, an interrupt is not.
+enum Outcome {
+    Closed,
+    Interrupted,
+}
+
+async fn session(args: &Args) -> anyhow::Result<Outcome> {
     let (mut ws, _) = tokio_tungstenite::connect_async(WS_URL).await?;
     let channels = vec![
         format!("book.{}.{}", args.instrument, args.interval),
@@ -77,12 +93,27 @@ async fn session(args: &Args) -> anyhow::Result<()> {
 
     let mut writer = RawWriter::new(args.out.clone());
     let mut gaps = GapDetector::default();
+    let mut next_rest_check = std::time::Instant::now();
     let mut gap_log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(args.out.join("gaps.jsonl"))?;
 
-    while let Some(msg) = ws.next().await {
+    loop {
+        let msg = tokio::select! {
+            m = ws.next() => match m {
+                Some(m) => m,
+                None => break,
+            },
+            // A recorder that is killed mid-frame leaves a file its own reader
+            // cannot open. Catching the signal and finishing the frame is the
+            // difference between losing a few seconds and losing the hour.
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("interrupted, closing the current file");
+                writer.finish()?;
+                return Ok(Outcome::Interrupted);
+            }
+        };
         let text = match msg? {
             Message::Text(t) => t.to_string(),
             Message::Ping(p) => {
@@ -93,6 +124,21 @@ async fn session(args: &Args) -> anyhow::Result<()> {
             _ => continue,
         };
         writer.write(now_ms(), &text)?;
+
+        if args.rest_check_secs > 0 && std::time::Instant::now() >= next_rest_check {
+            next_rest_check = std::time::Instant::now() + Duration::from_secs(args.rest_check_secs);
+            let url = format!("{REST_BOOK}?instrument_name={}&depth=10", args.instrument);
+            match reqwest::get(&url).await {
+                Ok(r) => match r.text().await {
+                    Ok(body) => {
+                        let line = serde_json::json!({"source": "rest-check", "body": body});
+                        writer.write(now_ms(), &line.to_string())?;
+                    }
+                    Err(e) => eprintln!("rest check body: {e}"),
+                },
+                Err(e) => eprintln!("rest check: {e}"),
+            }
+        }
 
         let Ok(note) = serde_json::from_str::<Notification>(&text) else {
             // Heartbeats and RPC replies are not notifications; they are still
@@ -125,5 +171,5 @@ async fn session(args: &Args) -> anyhow::Result<()> {
         }
     }
     writer.finish()?;
-    Ok(())
+    Ok(Outcome::Closed)
 }

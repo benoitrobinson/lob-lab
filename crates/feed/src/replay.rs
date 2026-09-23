@@ -88,6 +88,54 @@ pub fn parse_lines<I: Iterator<Item = String>>(lines: I, inst: &Instrument) -> V
     events
 }
 
+/// Decompresses one recorded file, keeping whatever is readable.
+///
+/// A recorder that is killed leaves its last zstd frame unterminated, and a
+/// strict reader throws away the whole hour rather than the last few seconds.
+/// The recorder flushes as it goes so that everything up to the last flush is
+/// recoverable, and this reads up to the break and says how much it kept. The
+/// trailing partial line is dropped: half a JSON object is not data.
+pub fn read_file(path: &Path) -> anyhow::Result<Vec<String>> {
+    let file = std::fs::File::open(path)?;
+    let mut decoder = zstd::stream::read::Decoder::new(file)?;
+    let mut bytes = Vec::new();
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        match std::io::Read::read(&mut decoder, &mut chunk) {
+            Ok(0) => break,
+            Ok(n) => bytes.extend_from_slice(&chunk[..n]),
+            Err(e) => {
+                eprintln!(
+                    "{}: {e}; keeping the {} bytes read before the break",
+                    path.display(),
+                    bytes.len()
+                );
+                break;
+            }
+        }
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let complete = match text.rfind('\n') {
+        Some(end) => &text[..end],
+        None => return Ok(Vec::new()),
+    };
+    Ok(complete.lines().map(|s| s.to_string()).collect())
+}
+
+/// Every recorded line in a directory, in hour order.
+pub fn read_lines(dir: &Path) -> anyhow::Result<Vec<String>> {
+    let mut files: Vec<_> = std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.to_string_lossy().ends_with(".jsonl.zst"))
+        .collect();
+    files.sort();
+    let mut lines = Vec::new();
+    for path in files {
+        lines.extend(read_file(&path)?);
+    }
+    Ok(lines)
+}
+
 /// Reads every `raw-*.jsonl.zst` in a directory, in hour order.
 pub fn read_dir(dir: &Path, inst: &Instrument) -> anyhow::Result<Vec<Event>> {
     let mut files: Vec<_> = std::fs::read_dir(dir)?
@@ -97,10 +145,7 @@ pub fn read_dir(dir: &Path, inst: &Instrument) -> anyhow::Result<Vec<Event>> {
     files.sort();
     let mut lines = Vec::new();
     for path in files {
-        let file = std::fs::File::open(&path)?;
-        let mut text = String::new();
-        std::io::Read::read_to_string(&mut zstd::stream::read::Decoder::new(file)?, &mut text)?;
-        lines.extend(text.lines().map(|s| s.to_string()));
+        lines.extend(read_file(&path)?);
     }
     Ok(parse_lines(lines.into_iter(), inst))
 }

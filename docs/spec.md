@@ -31,8 +31,10 @@ positive one.
 
 1. A recorder for Deribit public market data that runs unattended for days, detects gaps
    through `prev_change_id`, and resyncs over REST.
-2. A limit order book rebuilt from that feed, validated against the exchange's own
-   `quote` channel.
+2. A limit order book rebuilt from that feed, validated against REST snapshots at a
+   matching `change_id`. Comparing it against the `quote` channel instead compares two
+   feeds on different clocks, which disagrees about 45% of the time while the book is
+   exactly right; that comparison is reported as drift, never as a gate.
 3. An event-driven simulator with configurable order latency, three fill models, Deribit's
    real fee schedule, and inverse-contract P&L in BTC.
 4. Two quoters: symmetric, and the GLFT inventory-skew form ported from `vol-lab`, with

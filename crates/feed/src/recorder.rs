@@ -1,4 +1,3 @@
-use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -9,14 +8,23 @@ pub fn hour_of(timestamp_ms: i64) -> i64 {
     timestamp_ms.div_euclid(3_600_000)
 }
 
+/// Flush this often. A killed recorder loses everything written since the last
+/// flush, so this is the size of the hole a crash leaves: a few seconds.
+const FLUSH_EVERY: u64 = 200;
+
 pub struct RawWriter {
     dir: PathBuf,
-    current: Option<(i64, zstd::stream::write::Encoder<'static, File>)>,
+    current: Option<(i64, zstd::stream::write::Encoder<'static, std::fs::File>)>,
+    since_flush: u64,
 }
 
 impl RawWriter {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir, current: None }
+        Self {
+            dir,
+            current: None,
+            since_flush: 0,
+        }
     }
 
     pub fn write(&mut self, timestamp_ms: i64, line: &str) -> anyhow::Result<()> {
@@ -28,12 +36,24 @@ impl RawWriter {
         if rotate {
             self.finish()?;
             let path = self.dir.join(format!("raw-{hour}.jsonl.zst"));
-            let file = File::create(path)?;
+            // Append, never create. A reconnect inside the same hour used to
+            // truncate the hour's file and silently throw the recording away;
+            // zstd reads concatenated frames, so appending a new frame after a
+            // reconnect costs nothing and loses nothing.
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)?;
             self.current = Some((hour, zstd::stream::write::Encoder::new(file, 3)?));
         }
         let (_, writer) = self.current.as_mut().expect("writer exists after rotate");
         writer.write_all(line.as_bytes())?;
         writer.write_all(b"\n")?;
+        self.since_flush += 1;
+        if self.since_flush >= FLUSH_EVERY {
+            writer.flush()?;
+            self.since_flush = 0;
+        }
         Ok(())
     }
 

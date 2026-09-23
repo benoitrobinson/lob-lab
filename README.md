@@ -12,6 +12,24 @@ advantage measured on synthetic paths in `vol-lab` survives a queue-aware fill m
 Work in progress. Results are not in yet, so this README carries no numbers. When it
 does, every number carries an uncertainty and the command that regenerates it.
 
+## The question this inherits
+
+`vol-lab` measured, on simulated flow, that leaning quotes against inventory does nothing
+at all about adverse selection: three different quoting rules marked out within 0.0002 of
+each other. A quoting rule is a function of the position; information is a property of the
+next fill. So if anything is to help, it has to be a signal about that fill.
+
+Order flow imbalance, after Cont, Kukanov and Stoikov (2014), is the cheapest such signal
+and comes from the feed already being recorded. Measured on four minutes of live
+BTC-PERPETUAL data, it points the right way 59.8% of the time over the next 500 ms and
+58.8% over a second, decaying to 52.5% over thirty:
+
+    make ofi        # slope, r2, sign agreement, by horizon
+
+Four minutes is not a result, it is a working pipeline; the same command on recorded days
+is. The quoter that acts on it joins the touch and stands aside on the threatened side,
+and the study reports what that costs in fills next to what it saves in markout.
+
 ## How the book is checked
 
 The obvious check is the exchange's own `quote` channel, and it is the wrong one. That

@@ -1,4 +1,5 @@
 use lob::{Qty, Tick};
+use signal::ofi::{Ofi, Touch};
 use sim::engine::{Ctx, Quoter, Quotes};
 
 /// Fixed distance from the mid, no inventory term. The control.
@@ -88,6 +89,100 @@ impl Quoter for GlftQuoter {
             ask: Some(to_tick(mid + ask_usd)),
             size: self.size,
         })
+    }
+}
+
+/// Joins the touch, but stands aside on the side the flow is about to run
+/// over.
+///
+/// This is the answer to `vol-lab`'s finding that inventory skew does nothing
+/// about adverse selection. Skew is a function of the position; being picked
+/// off is a property of the next fill, and the only defence is a signal about
+/// it. Order flow imbalance is the cheapest one, and it comes from the feed
+/// the book is already rebuilt from.
+///
+/// The trade is explicit: quoting one side less often gives up fills, and the
+/// question the study asks is whether the markout saved is worth more than the
+/// spread given up.
+pub struct SignalQuoter {
+    pub ofi: Ofi,
+    /// Imbalance beyond which the threatened side is pulled, in the same units
+    /// as the imbalance itself. The study sets it from the day's own spread of
+    /// imbalance rather than from a number chosen in advance.
+    pub threshold: f64,
+    pub size: Qty,
+    /// Counts how often each side was pulled, so the cost of the defence is
+    /// visible rather than inferred.
+    pub pulled_bid: u64,
+    pub pulled_ask: u64,
+    /// The largest imbalance the quoter ever saw, so a threshold that never
+    /// fires is visible as such rather than as a strategy that chose not to.
+    pub max_abs: f64,
+    pub observations: u64,
+}
+
+impl SignalQuoter {
+    pub fn new(window_ms: i64, threshold: f64, size: Qty) -> Self {
+        Self {
+            ofi: Ofi::new(window_ms),
+            threshold,
+            size,
+            pulled_bid: 0,
+            pulled_ask: 0,
+            max_abs: 0.0,
+            observations: 0,
+        }
+    }
+}
+
+impl Quoter for SignalQuoter {
+    fn observe(&mut self, ctx: &Ctx) {
+        let (Some((bid, bid_qty)), Some((ask, ask_qty))) =
+            (ctx.book.best_bid(), ctx.book.best_ask())
+        else {
+            return;
+        };
+        let value = self.ofi.update(
+            ctx.ts,
+            Touch {
+                bid,
+                bid_qty,
+                ask,
+                ask_qty,
+            },
+        );
+        self.observations += 1;
+        self.max_abs = self.max_abs.max(value.abs());
+    }
+
+    fn quote(&mut self, ctx: &Ctx) -> Option<Quotes> {
+        let (bid, _) = ctx.book.best_bid()?;
+        let (ask, _) = ctx.book.best_ask()?;
+        let imbalance = self.ofi.value();
+        let mut quotes = Quotes {
+            bid: Some(bid),
+            ask: Some(ask),
+            size: self.size,
+        };
+        if imbalance > self.threshold {
+            // Buyers are arriving. Selling to them at the touch is selling
+            // into the move.
+            quotes.ask = None;
+            self.pulled_ask += 1;
+        } else if imbalance < -self.threshold {
+            quotes.bid = None;
+            self.pulled_bid += 1;
+        }
+        Some(quotes)
+    }
+
+    fn report(&self) -> Vec<(&'static str, f64)> {
+        vec![
+            ("pulled_bid", self.pulled_bid as f64),
+            ("pulled_ask", self.pulled_ask as f64),
+            ("max_abs_imbalance", self.max_abs),
+            ("observations", self.observations as f64),
+        ]
     }
 }
 
@@ -182,6 +277,102 @@ mod tests {
         .unwrap();
         assert_eq!(behind.bid, Some(199));
         assert_eq!(behind.ask, Some(211));
+    }
+
+    fn book_at(bid_qty: lob::Qty, ask_qty: lob::Qty) -> lob::Book {
+        let mut book = lob::Book::new();
+        book.set(lob::Side::Bid, 200, bid_qty);
+        book.set(lob::Side::Ask, 210, ask_qty);
+        book
+    }
+
+    #[test]
+    fn a_quiet_book_leaves_both_sides_quoted() {
+        let mut q = SignalQuoter::new(1_000, 100.0, 10);
+        let book = book_at(50, 50);
+        let ctx = Ctx {
+            ts: 0,
+            book: &book,
+            position_usd: 0,
+        };
+        q.observe(&ctx);
+        let quotes = q.quote(&ctx).unwrap();
+        assert_eq!(quotes.bid, Some(200));
+        assert_eq!(quotes.ask, Some(210));
+    }
+
+    #[test]
+    fn buyers_arriving_pull_the_ask() {
+        let mut q = SignalQuoter::new(1_000, 100.0, 10);
+        let first = book_at(50, 50);
+        q.observe(&Ctx {
+            ts: 0,
+            book: &first,
+            position_usd: 0,
+        });
+        // Size piles onto the bid and leaves the ask: demand.
+        let second = book_at(300, 10);
+        let ctx = Ctx {
+            ts: 100,
+            book: &second,
+            position_usd: 0,
+        };
+        q.observe(&ctx);
+        let quotes = q.quote(&ctx).unwrap();
+        assert_eq!(quotes.bid, Some(200), "the safe side stays quoted");
+        assert_eq!(quotes.ask, None, "the threatened side is pulled");
+        assert_eq!(q.pulled_ask, 1);
+        assert_eq!(q.pulled_bid, 0);
+    }
+
+    #[test]
+    fn sellers_arriving_pull_the_bid() {
+        let mut q = SignalQuoter::new(1_000, 100.0, 10);
+        let first = book_at(50, 50);
+        q.observe(&Ctx {
+            ts: 0,
+            book: &first,
+            position_usd: 0,
+        });
+        let second = book_at(10, 300);
+        let ctx = Ctx {
+            ts: 100,
+            book: &second,
+            position_usd: 0,
+        };
+        q.observe(&ctx);
+        let quotes = q.quote(&ctx).unwrap();
+        assert_eq!(quotes.bid, None);
+        assert_eq!(quotes.ask, Some(210));
+        assert_eq!(q.pulled_bid, 1);
+    }
+
+    #[test]
+    fn a_high_threshold_never_pulls() {
+        let mut q = SignalQuoter::new(1_000, 1e9, 10);
+        let first = book_at(50, 50);
+        q.observe(&Ctx {
+            ts: 0,
+            book: &first,
+            position_usd: 0,
+        });
+        let second = book_at(5_000, 1);
+        let ctx = Ctx {
+            ts: 100,
+            book: &second,
+            position_usd: 0,
+        };
+        q.observe(&ctx);
+        let quotes = q.quote(&ctx).unwrap();
+        assert!(quotes.bid.is_some() && quotes.ask.is_some());
+        let pulled: f64 = q
+            .report()
+            .iter()
+            .filter(|(k, _)| k.starts_with("pulled"))
+            .map(|(_, v)| v)
+            .sum();
+        assert_eq!(pulled, 0.0);
+        assert!(q.observations > 0, "it still watched the book");
     }
 
     #[test]

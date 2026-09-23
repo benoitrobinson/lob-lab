@@ -10,7 +10,7 @@ use sim::engine::{Config, Engine, Quoter};
 use sim::markout::markouts_bps;
 use sim::queue::QueueModel;
 use strategy::intensity;
-use strategy::quoters::{Glft, GlftQuoter, JoinTouch, Symmetric};
+use strategy::quoters::{Glft, GlftQuoter, JoinTouch, SignalQuoter, Symmetric};
 
 #[derive(Parser)]
 struct Args {
@@ -29,6 +29,15 @@ struct Args {
     resamples: usize,
     #[arg(long, default_value_t = 20_260_922)]
     seed: u64,
+    /// Window over which order flow imbalance is accumulated.
+    #[arg(long, default_value_t = 1_000)]
+    ofi_window_ms: i64,
+    /// How many standard deviations of the day's own imbalance the signal
+    /// quoter waits for before standing aside. Setting the threshold from the
+    /// day rather than from a number chosen in advance keeps it comparable
+    /// across days that traded at different sizes.
+    #[arg(long, default_value_t = 1.0)]
+    ofi_sigmas: f64,
 }
 
 const HORIZONS_MS: [i64; 3] = [100, 1_000, 10_000];
@@ -42,6 +51,8 @@ struct Row {
     fees_btc: f64,
     markout_1s: f64,
     halted_ms: i64,
+    /// How often the quoter declined to quote a side.
+    pulled: f64,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -99,6 +110,9 @@ fn main() -> anyhow::Result<()> {
         }
         eprintln!("{name}: A {:.2} kappa {:.4}", fitted.a, fitted.kappa);
         let sigma = realised_sigma(&events, inst.tick_size);
+        let ofi_sd = ofi_spread(&events, args.ofi_window_ms);
+        let threshold = args.ofi_sigmas * ofi_sd;
+        eprintln!("{name}: imbalance sd {ofi_sd:.1}, threshold {threshold:.1}");
 
         for (model_name, model) in [
             ("naive", QueueModel::Naive),
@@ -121,6 +135,7 @@ fn main() -> anyhow::Result<()> {
                 half_spread_ticks: 2,
                 size: args.quote_size,
             };
+            let mut signal = SignalQuoter::new(args.ofi_window_ms, threshold, args.quote_size);
             let mut glft = GlftQuoter {
                 model: Glft {
                     gamma: 0.1,
@@ -133,6 +148,7 @@ fn main() -> anyhow::Result<()> {
             };
             for (quoter_name, quoter) in [
                 ("touch", &mut touch as &mut dyn Quoter),
+                ("signal", &mut signal as &mut dyn Quoter),
                 ("symmetric", &mut symmetric as &mut dyn Quoter),
                 ("glft", &mut glft as &mut dyn Quoter),
             ] {
@@ -144,6 +160,28 @@ fn main() -> anyhow::Result<()> {
                     .map(|m| report.ledger.equity_btc(m))
                     .unwrap_or(f64::NAN);
                 let marks = markouts_bps(&report.ledger.fills, &report.mids, &HORIZONS_MS);
+                let pulled = quoter
+                    .report()
+                    .iter()
+                    .filter(|(k, _)| k.starts_with("pulled"))
+                    .map(|(_, v)| v)
+                    .sum::<f64>();
+                if quoter_name == "signal" && model_name == "naive" {
+                    let r = quoter.report();
+                    let get = |k: &str| {
+                        r.iter()
+                            .find(|(n, _)| *n == k)
+                            .map(|(_, v)| *v)
+                            .unwrap_or(0.0)
+                    };
+                    eprintln!(
+                        "  signal/{model_name}: {} observations, largest imbalance {:.0}, threshold {:.0}, pulled {:.0}",
+                        get("observations"),
+                        get("max_abs_imbalance"),
+                        threshold,
+                        get("pulled_bid") + get("pulled_ask")
+                    );
+                }
                 rows.push(Row {
                     day: name.clone(),
                     quoter: quoter_name,
@@ -153,17 +191,26 @@ fn main() -> anyhow::Result<()> {
                     fees_btc: report.ledger.fees_btc,
                     markout_1s: marks[1],
                     halted_ms: report.halted_ms,
+                    pulled,
                 });
             }
         }
     }
 
     let mut csv =
-        String::from("day,quoter,model,pnl_btc,fills,fees_btc,markout_1s_bps,halted_ms\n");
+        String::from("day,quoter,model,pnl_btc,fills,fees_btc,markout_1s_bps,halted_ms,pulled\n");
     for r in &rows {
         csv.push_str(&format!(
-            "{},{},{},{},{},{},{},{}\n",
-            r.day, r.quoter, r.model, r.pnl_btc, r.fills, r.fees_btc, r.markout_1s, r.halted_ms
+            "{},{},{},{},{},{},{},{},{}\n",
+            r.day,
+            r.quoter,
+            r.model,
+            r.pnl_btc,
+            r.fills,
+            r.fees_btc,
+            r.markout_1s,
+            r.halted_ms,
+            r.pulled
         ));
     }
     std::fs::write(args.out.join("runs.csv"), csv)?;
@@ -233,6 +280,53 @@ fn main() -> anyhow::Result<()> {
     )?;
     println!("{headline:#}");
     Ok(())
+}
+
+/// The standard deviation of the day's own order flow imbalance, which is what
+/// the signal quoter's threshold is stated in. Computed in one pass before the
+/// grid runs, from the same feed, so no future information reaches the
+/// threshold beyond the scale of the day.
+fn ofi_spread(events: &[Event], window_ms: i64) -> f64 {
+    use lob::{Book, Side};
+    use signal::ofi::{Ofi, Touch};
+    let mut book = Book::new();
+    let mut ofi = Ofi::new(window_ms);
+    let mut values = Vec::new();
+    for e in events {
+        match e {
+            Event::Gap { .. } => {
+                book.clear();
+                ofi.reset();
+                continue;
+            }
+            Event::Snapshot { bids, asks, .. } | Event::Change { bids, asks, .. } => {
+                for (p, q) in bids {
+                    book.set(Side::Bid, *p, *q);
+                }
+                for (p, q) in asks {
+                    book.set(Side::Ask, *p, *q);
+                }
+            }
+            _ => continue,
+        }
+        if let (Some((bid, bid_qty)), Some((ask, ask_qty))) = (book.best_bid(), book.best_ask()) {
+            values.push(ofi.update(
+                e.ts(),
+                Touch {
+                    bid,
+                    bid_qty,
+                    ask,
+                    ask_qty,
+                },
+            ));
+        }
+    }
+    if values.len() < 3 {
+        return 0.0;
+    }
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    let var = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (values.len() - 1) as f64;
+    var.sqrt()
 }
 
 /// Realised volatility of the mid in USD per square root second, from

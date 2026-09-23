@@ -36,6 +36,18 @@ pub struct Quotes {
 
 pub trait Quoter {
     fn quote(&mut self, ctx: &Ctx) -> Option<Quotes>;
+
+    /// Called on every market event, before the requote throttle. A quoter
+    /// that maintains a signal has to see every update: sampling the book only
+    /// when it happens to requote would measure a different quantity.
+    fn observe(&mut self, _ctx: &Ctx) {}
+
+    /// Whatever the quoter wants recorded next to the run. A strategy that
+    /// declines to quote has to report how often, or the cost of its defence
+    /// is invisible.
+    fn report(&self) -> Vec<(&'static str, f64)> {
+        Vec::new()
+    }
 }
 
 pub struct Report {
@@ -224,6 +236,11 @@ impl Engine {
             {
                 self.mids.push((ts, mid));
             }
+            quoter.observe(&Ctx {
+                ts,
+                book: &self.book,
+                position_usd: self.ledger.position_usd,
+            });
             self.decide(ts, quoter);
         }
         if let Some(since) = self.halted_since.take() {
@@ -387,6 +404,51 @@ mod tests {
         assert_eq!(report.ledger.fills.len(), 1);
         assert_eq!(report.ledger.fills[0].ts, 5_000);
         assert_eq!(report.halted_ms, 1_500);
+    }
+
+    /// The engine has to hand every market event to the quoter, not only the
+    /// ones where it requotes. A signal built from the book measures something
+    /// different if it only sees a sample, and the failure is silent: the
+    /// strategy simply never fires.
+    #[test]
+    fn every_market_event_reaches_the_quoter() {
+        #[derive(Default)]
+        struct Counting {
+            seen: usize,
+        }
+
+        impl Quoter for Counting {
+            fn quote(&mut self, _ctx: &Ctx) -> Option<Quotes> {
+                None
+            }
+
+            fn observe(&mut self, _ctx: &Ctx) {
+                self.seen += 1;
+            }
+        }
+
+        let events = vec![
+            snapshot(0),
+            Event::Trade {
+                ts: 100,
+                price: 200,
+                size: 10,
+                side: Side::Bid,
+            },
+            Event::Change {
+                ts: 200,
+                bids: vec![(200, 50)],
+                asks: vec![],
+            },
+            Event::Quote {
+                ts: 300,
+                bid: Some((200, 50)),
+                ask: Some((202, 100)),
+            },
+        ];
+        let mut q = Counting::default();
+        Engine::new(config(0, QueueModel::Naive)).run(&events, &mut q);
+        assert_eq!(q.seen, events.len());
     }
 
     #[test]

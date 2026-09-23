@@ -58,3 +58,24 @@ the strategy, since a model that hands out fills that were never there exaggerat
 just as it flatters an edge, and the fill ratio does not. Both are reported, and the sign
 of the mean naive P&L is reported next to them so the reader can tell which case they are
 in.
+
+## Addition, 2026-09-23: an exploratory quoter
+
+A fourth quoter joins the grid, and it is exploratory rather than preregistered. Anything
+it produces is reported as such.
+
+`vol-lab` measured that inventory skew does nothing about adverse selection: all three
+quoting rules marked out identically under informed flow, because a quoting rule is a
+function of the position while information is a property of the next fill. The obvious
+next question is whether a signal about the next fill helps, and order flow imbalance
+after Cont, Kukanov and Stoikov (2014) is the cheapest one, computed from the same feed
+the book is rebuilt from.
+
+The quoter joins the touch and stands aside on the side the imbalance points at. Its
+threshold is set at one standard deviation of that day's own imbalance, computed in a
+single pass before the grid runs, so no threshold is chosen after seeing a result and no
+day's threshold depends on another day's scale.
+
+The primary statistic is unchanged and still concerns the fill models. What this quoter
+reports is a trade: markout saved against fills given up, with the number of times each
+side was pulled recorded next to it.

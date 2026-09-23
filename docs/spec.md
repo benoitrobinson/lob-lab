@@ -37,11 +37,26 @@ positive one.
    exactly right; that comparison is reported as drift, never as a gate.
 3. An event-driven simulator with configurable order latency, three fill models, Deribit's
    real fee schedule, and inverse-contract P&L in BTC.
-4. Two quoters: symmetric, and the GLFT inventory-skew form ported from `vol-lab`, with
-   its intensity parameters A and kappa estimated from the recorded trades rather than
-   assumed.
+4. Four quoters: one that joins the touch, one that stands aside on the side order flow
+   imbalance points at, a symmetric control, and the GLFT inventory-skew form ported from
+   `vol-lab`, with its intensity parameters A and kappa estimated from the recorded trades
+   rather than assumed.
 5. One study binary that runs the grid and writes the numbers, plus a paired bootstrap for
    the confidence intervals.
+
+## Why a signal at all
+
+`vol-lab` finding 12 measured that inventory skew gives no protection against informed
+flow: under a tilt that makes a fraction of arrivals trade just before the mid moves, all
+three quoting rules marked out within 0.0002 of each other. That is not a failure of the
+rules, it is what they are: a quoting rule is a function of the position, and information
+is a property of the next fill.
+
+So the defence has to be a signal about the next fill. Order flow imbalance is the
+cheapest one available here, it is computed from the feed already being recorded, and its
+predictive power decays over seconds, which is the horizon a market maker actually cares
+about. Measuring that decay, and what standing aside on the strength of it costs in fills,
+is the question this repository inherits from that finding.
 
 ## Constraints
 

@@ -1153,6 +1153,7 @@ dependencies = [
  "clap",
  "feed",
  "lob",
+ "serde_json",
 ]
 
 [[package]]

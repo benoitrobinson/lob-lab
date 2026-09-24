@@ -25,8 +25,9 @@ next fill. So if anything is to help, it has to be a signal about that fill.
 
 Order flow imbalance, after Cont, Kukanov and Stoikov (2014), is the cheapest such signal
 and comes from the feed already being recorded. Measured on four minutes of live
-BTC-PERPETUAL data, it points the right way 59.8% of the time over the next 500 ms and
-58.8% over a second, decaying to 52.5% over thirty:
+BTC-PERPETUAL data, it points the right way 57.7% of the time over the next 500 ms and
+61.9% over a second, on only 26 and 42 moves, and is back to a coin flip (50.8%) by five
+seconds:
 
     make ofi        # slope, r2, sign agreement, by horizon
 
@@ -74,6 +75,10 @@ different**, and 21 straddling two aggregated updates.
     make verify     # reports drift, then the decisive comparison
     make study      # writes artifacts/runs.csv and artifacts/headline.json
     make figures    # draws them; no figure is committed until there is a result
+
+The same numbers are drawn in the terminal by tab 8 of
+[`vol-lab`](https://github.com/benoitrobinson/vol-lab)'s panel, which runs these binaries
+on whatever has been recorded.
 
 ## Limitations, stated up front
 

@@ -9,3 +9,4 @@ lob = { path = "../lob" }
 feed = { path = "../feed" }
 anyhow.workspace = true
 clap.workspace = true
+serde_json.workspace = true

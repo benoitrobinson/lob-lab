@@ -26,6 +26,9 @@ struct Args {
     /// Horizons to predict, in milliseconds.
     #[arg(long, value_delimiter = ',', default_value = "500,1000,5000,30000")]
     horizons_ms: Vec<i64>,
+    /// Print JSON instead of the table, for vol-lab's panel.
+    #[arg(long)]
+    json: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -96,17 +99,20 @@ fn main() -> anyhow::Result<()> {
     };
     let last_ts = mids.last().map(|(t, _)| *t).unwrap_or(0);
 
-    println!(
-        "{} book updates, {} samples every {} ms, imbalance over {} ms",
-        mids.len(),
-        samples.len(),
-        args.sample_ms,
-        args.window_ms
-    );
-    println!(
-        "{:>9} {:>10} {:>9} {:>9} {:>7} {:>8}",
-        "horizon", "slope", "r2", "sign", "moved", "n"
-    );
+    if !args.json {
+        println!(
+            "{} book updates, {} samples every {} ms, imbalance over {} ms",
+            mids.len(),
+            samples.len(),
+            args.sample_ms,
+            args.window_ms
+        );
+        println!(
+            "{:>9} {:>10} {:>9} {:>9} {:>7} {:>8}",
+            "horizon", "slope", "r2", "sign", "moved", "n"
+        );
+    }
+    let mut rows = Vec::new();
     for h in &args.horizons_ms {
         let mut x = Vec::new();
         let mut y = Vec::new();
@@ -138,7 +144,25 @@ fn main() -> anyhow::Result<()> {
         } else {
             f64::NAN
         };
-        println!("{h:>7} ms {slope:>10.3e} {r2:>9.4} {sign_pct:>7.1}% {moved:>7} {n:>8}");
+        if args.json {
+            rows.push(serde_json::json!({
+                "horizon_ms": h, "slope": slope, "r2": r2,
+                "sign_pct": sign_pct, "moved": moved, "n": n,
+            }));
+        } else {
+            println!("{h:>7} ms {slope:>10.3e} {r2:>9.4} {sign_pct:>7.1}% {moved:>7} {n:>8}");
+        }
+    }
+    if args.json {
+        let out = serde_json::json!({
+            "book_updates": mids.len(),
+            "samples": samples.len(),
+            "sample_ms": args.sample_ms,
+            "window_ms": args.window_ms,
+            "horizons": rows,
+        });
+        println!("{out}");
+        return Ok(());
     }
     println!(
         "\nslope is USD of mid move per unit of imbalance; sign is how often the \
